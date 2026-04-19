@@ -1,8 +1,11 @@
 import os
 from langchain_community.document_loaders import GitLoader
 from langchain_openrouter import ChatOpenRouter
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from schemas import RepoRequest, AnalysisResponse, OptimizationSuggesstion
+from dotenv import load_dotenv
+
+load_dotenv()
 
 llm = ChatOpenRouter(
     model="deepseek/deepseek-chat",
@@ -15,7 +18,7 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
         clone_url=str(request.repo_url),
         repo_path='./temp_repo',
         branch=request.branch,
-        file_filter=lambda file_path: file_path.endswith((".py", ".cpp", ".java", ".js", ".c"))
+        file_filter=lambda file_path: file_path.endswith((".py", ".cpp", ".java", ".js", ".c", ".jsx"))
     )
     
     documents = loader.load()
