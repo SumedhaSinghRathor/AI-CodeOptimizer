@@ -5,7 +5,7 @@ class RepoRequest(BaseModel):
     repo_url: HttpUrl
     branch: Optional[str] = "main"
     
-class OptimizationSuggesstion(BaseModel):
+class OptimizationSuggestion(BaseModel):
     file_path: str
     original_complexity: str
     optimized_complexity: str
@@ -14,5 +14,5 @@ class OptimizationSuggesstion(BaseModel):
     
 class AnalysisResponse(BaseModel):
     repo_name: str
-    suggestions: List[OptimizationSuggesstion]
+    suggestions: List[OptimizationSuggestion]
     status: str = "completed"

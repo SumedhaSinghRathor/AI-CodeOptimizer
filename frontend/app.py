@@ -26,7 +26,11 @@ if st.button("Analyze & Optimize"):
                 response = requests.post(backend_url, json=payload)
                 
                 if response.status_code == 200:
-                    data = response.json()
+                    try:
+                        data = response.json()
+                    except Exception:
+                        st.error(f"Invalid response from backend: {response.text}")
+                        st.stop()
                     st.success(f"Analysis complete for: {data['repo_name']}")
                     
                     for idx, suggestion in enumerate(data['suggestions']):
