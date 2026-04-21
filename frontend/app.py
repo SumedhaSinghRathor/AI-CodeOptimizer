@@ -14,7 +14,37 @@ st.subheader("Submit a GitHub Repo to improve Time & Space Complexity")
 backend_url = os.getenv("BACKEND_URL")
     
 repo_url = st.text_input("GitHub Public Repository URL", placeholder="https://github.com")
-branch = st.text_input("Branch (optional)", value="main")
+
+@st.cache_data
+def fetch_branches(repo_url):
+    try:
+        parts = repo_url.strip("/").split("/")
+        owner, repo = parts[-2], parts[-1]
+        
+        url = f"https://api.github.com/repos/{owner}/{repo}/branches"
+
+        headers = {
+            "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"
+        }
+        
+        response = requests.get(url, headers=headers)
+
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+        return [branch["name"] for branch in data]
+    
+    except Exception as e:
+        print("Branch fetch error:", e)
+        return []
+    
+branches = []
+if repo_url:
+    with st.spinner("Fetching branches..."):
+        branches = fetch_branches(repo_url)
+    
+branch = st.selectbox("Select Branch", branches, index=0)
 
 if st.button("Analyze & Optimize"):
     if not repo_url:
