@@ -9,9 +9,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from schemas import RepoRequest, AnalysisResponse, OptimizationSuggestion
 from urllib.parse import urlparse
 from pydantic import HttpUrl
-
-# from langchain_community.document_loaders import GitLoader
-# import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv()
 
@@ -91,18 +89,21 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
     file_paths = fetch_repo_files(owner, repo, branch)
     print("Total files fetched: ", len(file_paths))
 
-    documents = []
-
-    for path in file_paths[:10]:
+    def fetch_single_file(path):
         content = fetch_file_content(owner, repo, path)
         if content:
-            documents.append({
-                "file_path": path,
-                "content": content
-            })
-    
-    suggestions = []
-    
+            return {"file_path": path, "content": content}
+        return None
+
+    documents = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_single_file, path) for path in file_paths[:10]]
+        
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                documents.append(result)
+
     prompt = ChatPromptTemplate.from_template("""
     Analyze the following code from file: {file_path}
     Focus ONLY on improving Time and Space Complexity.
@@ -124,40 +125,45 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
         "refactored_code": "..."
     }}
     """)
-    
+
     chain = prompt | llm.with_structured_output(OptimizationSuggestion)
-    
-    for doc in documents[:5]:
-        response = chain.invoke({
-            "file_path": doc["file_path"],
-            "code_content": doc["content"]
-        })
-        
+
+    def process_doc(doc):
         try:
+            response = chain.invoke({
+                "file_path": doc["file_path"],
+                "code_content": doc["content"]
+            })
+
             cleaned = clean_llm_json(response.content)
             parsed = json.loads(cleaned)
-        except json.JSONDecodeError:
-            print("Invalid JSON from LLM: ", response.content)
-            continue
-        
-        required_keys = ["original_complexity", "optimized_complexity", "explanation", "refactored_code"]
-        if not all(key in parsed for key in required_keys):
-            print("Missing keys:", parsed)
-            continue
-            
-        suggestions.append(OptimizationSuggestion(
-            file_path=doc["file_path"],
-            original_complexity=parsed["original_complexity"],
-            optimized_complexity=parsed["optimized_complexity"],
-            explanation=parsed["explanation"],
-            refactored_code=parsed["refactored_code"]
-        ))
-        
-        print("Processing:", doc["file_path"])
-        print("LLM RAW:", response.content[:200])
-        
-    print("Owner:", owner, "Repo:", repo)
-    print("File paths:", file_paths[:5])
-    print("Documents count:", len(documents))
-        
-    return AnalysisResponse(repo_name=f"{owner}/{repo}", suggestions=suggestions)
+
+            required_keys = ["original_complexity", "optimized_complexity", "explanation", "refactored_code"]
+            if not all(key in parsed for key in required_keys):
+                return None
+
+            return OptimizationSuggestion(
+                file_path=doc["file_path"],
+                original_complexity=parsed["original_complexity"],
+                optimized_complexity=parsed["optimized_complexity"],
+                explanation=parsed["explanation"],
+                refactored_code=parsed["refactored_code"]
+            )
+
+        except Exception as e:
+            print("Error processing:", doc["file_path"], e)
+            return None
+
+    suggestions = []
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(process_doc, doc) for doc in documents[:5]]
+
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                suggestions.append(result)
+
+    return AnalysisResponse(
+        repo_name=f"{owner}/{repo}",
+        suggestions=suggestions
+    )
