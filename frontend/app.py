@@ -60,13 +60,13 @@ if st.button("Analyze & Optimize"):
 
             for s in data["suggestions"]:
                 with st.expander(f"📄 {s['file_path']}", expanded=True):
-
+                    st.markdown("### 📊 Metrics")
+                    
                     col1, col2 = st.columns(2)
-
                     with col1:
-                        st.markdown("### 📊 Metrics")
                         st.error(f"Current: {s['original_complexity']}")
                         st.success(f"Optimized: {s['optimized_complexity']}")
+                    with col2:
                         st.info(s["explanation"])
 
                     if view_mode == "Side-by-Side":
@@ -84,6 +84,5 @@ if st.button("Analyze & Optimize"):
                         st.markdown("### ⚡ Optimized Code")
                         st.code(s["refactored_code"])
 
-                    st.divider()
-
+st.divider()
 st.caption("Built with FastAPI + LangChain + FAISS + Streamlit")
