@@ -1,10 +1,13 @@
 import os
+import time
 import requests
-import json
 import base64
 import re
 from dotenv import load_dotenv
 from langchain_openrouter import ChatOpenRouter
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.prompts import ChatPromptTemplate
 from schemas import RepoRequest, AnalysisResponse, OptimizationSuggestion
 from urllib.parse import urlparse
@@ -18,6 +21,13 @@ llm = ChatOpenRouter(
     api_key=os.getenv("DEEPSEEK_API_KEY"),
     temperature=0.1
 )
+
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
+
+FAISS_DIR = "faiss_indexes"
+os.makedirs(FAISS_DIR, exist_ok=True)
 
 def parse_github_url(repo_url: HttpUrl):
     parsed = urlparse(str(repo_url))
@@ -72,15 +82,46 @@ def fetch_file_content(owner, repo, file_path):
 
     return content
 
-def clean_llm_json(text: str):
-    text = text.strip()
-    
-    if text.startswith("```"):
-        text = re.sub(r"^```json", "", text)
-        text = re.sub(r"^```", "", text)
-        text = re.sub(r"```$", "", text)
-        
-    return text.strip()
+def build_vector_store(documents, index_path):
+    texts = []
+    metadatas = []
+
+    for doc in documents:
+        texts.append(doc["content"])
+        metadatas.append({"file_path": doc["file_path"]})
+
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500, chunk_overlap=100
+    )
+
+    split_docs = splitter.create_documents(texts, metadatas)
+
+    vectorstore = FAISS.from_documents(split_docs, embeddings)
+    vectorstore.save_local(index_path)
+
+    return vectorstore
+
+def load_or_create_vectorstore(documents, owner, repo, branch):
+    index_path = os.path.join(FAISS_DIR, f"{owner}_{repo}_{branch}")
+
+    if os.path.exists(index_path):
+        try:
+            return FAISS.load_local(index_path, embeddings)
+        except Exception:
+            print("Failed to load FAISS index, rebuilding...")
+
+    return build_vector_store(documents, index_path)
+
+def retrieve_context(vectorstore, query, k=3):
+    docs = vectorstore.similarity_search(query, k=k)
+    MAX_CONTEXT_CHARS = 2000
+
+    context = "\n\n".join([
+        f"File: {d.metadata.get('file_path')}\n{d.page_content}"
+        for d in docs
+    ])
+
+    return context[:MAX_CONTEXT_CHARS]
 
 def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
     owner, repo = parse_github_url(request.repo_url)
@@ -104,57 +145,68 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
             if result:
                 documents.append(result)
 
+    if not documents:
+        return AnalysisResponse(
+            repo_name=f"{owner}/{repo}",
+            suggestions=[]
+        )
+
+    vectorstore = load_or_create_vectorstore(documents, owner, repo, branch)
+
     prompt = ChatPromptTemplate.from_template("""
     Analyze the following code from file: {file_path}
+                                              
+    You are also given additional relevant code context from the repository.
+
+    Context:
+    {retrieved_context}
+                                              
     Focus ONLY on improving Time and Space Complexity.
     
     Code:
     {code_content}
-    
-    IMPORTANT:
-    - Return ONLY valid JSON
-    - Do NOT include explanations outside JSON
-    - Do NOT use markdown
-    - Do NOT wrap in ```json
-    
-    Output format:
-    {{
-        "original_complexity": "...",
-        "optimized_complexity": "...",
-        "explanation": "...",
-        "refactored_code": "..."
-    }}
     """)
 
+    #     IMPORTANT:
+    # - Do NOT use markdown
+    
+    # Output format:
+    # {{
+    #     "original_complexity": "...",
+    #     "optimized_complexity": "...",
+    #     "explanation": "...",
+    #     "refactored_code": "..."
+    # }}
+
     chain = prompt | llm.with_structured_output(OptimizationSuggestion)
+    
+    def process_doc(doc, retries=2):
+        for attempt in range(retries):
+            try:
+                query = f"Optimize time and space complexity in {doc['file_path']}"
 
-    def process_doc(doc):
-        try:
-            response = chain.invoke({
-                "file_path": doc["file_path"],
-                "code_content": doc["content"]
-            })
+                retrieved_context = retrieve_context(
+                    vectorstore,
+                    query=query
+                )
 
-            cleaned = clean_llm_json(response.content)
-            parsed = json.loads(cleaned)
+                response = chain.invoke({
+                    "file_path": doc["file_path"],
+                    "code_content": doc["content"],
+                    "retrieved_context": retrieved_context,
+                })
 
-            required_keys = ["original_complexity", "optimized_complexity", "explanation", "refactored_code"]
-            if not all(key in parsed for key in required_keys):
-                return None
-
-            return OptimizationSuggestion(
-                file_path=doc["file_path"],
-                original_complexity=parsed["original_complexity"],
-                optimized_complexity=parsed["optimized_complexity"],
-                explanation=parsed["explanation"],
-                refactored_code=parsed["refactored_code"]
-            )
-
-        except Exception as e:
-            print("Error processing:", doc["file_path"], e)
-            return None
+                response.file_path = doc["file_path"]
+                return response
+        
+            except Exception as e:
+                print(f"Retry {attempt+1} failed for {doc['file_path']}: {e}")
+                time.sleep(1)
+        
+        return None
 
     suggestions = []
+
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(process_doc, doc) for doc in documents[:5]]
 
@@ -163,7 +215,4 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
             if result:
                 suggestions.append(result)
 
-    return AnalysisResponse(
-        repo_name=f"{owner}/{repo}",
-        suggestions=suggestions
-    )
+    return AnalysisResponse(repo_name = f"{owner}/{repo}", suggestions=suggestions)
