@@ -1,4 +1,4 @@
 .env
 virt-env/
 __pycache__/
-temp_repo/
+faiss_indexes/

@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import base64
-import re
 from dotenv import load_dotenv
 from langchain_openrouter import ChatOpenRouter
 from langchain_community.vectorstores import FAISS
@@ -162,48 +161,43 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
     {retrieved_context}
                                               
     Focus ONLY on improving Time and Space Complexity.
+                                              
+    STRICT RULES:
+    - You MUST return ALL fields: original_complexity, optimized_complexity, explanation, original_code, refactored_code
+    - original_code must be the exact snippet from input
+    - refactored_code must be the improved version
+    - DO NOT omit any field
+    - DO NOT return the full file
+    - Limit snippets to 5–30 lines
     
     Code:
     {code_content}
     """)
 
-    #     IMPORTANT:
-    # - Do NOT use markdown
-    
-    # Output format:
-    # {{
-    #     "original_complexity": "...",
-    #     "optimized_complexity": "...",
-    #     "explanation": "...",
-    #     "refactored_code": "..."
-    # }}
-
     chain = prompt | llm.with_structured_output(OptimizationSuggestion)
     
-    def process_doc(doc, retries=2):
-        for attempt in range(retries):
-            try:
-                query = f"Optimize time and space complexity in {doc['file_path']}"
+    def process_doc(doc):
+        try:
+            query = f"Optimize time and space complexity in {doc['file_path']}"
 
-                retrieved_context = retrieve_context(
-                    vectorstore,
-                    query=query
-                )
+            retrieved_context = retrieve_context(
+                vectorstore,
+                query=query
+            )
 
-                response = chain.invoke({
-                    "file_path": doc["file_path"],
-                    "code_content": doc["content"],
-                    "retrieved_context": retrieved_context,
-                })
+            response = chain.invoke({
+                "file_path": doc["file_path"],
+                "code_content": doc["content"],
+                "retrieved_context": retrieved_context,
+            })
 
-                response.file_path = doc["file_path"]
-                return response
+            print("LLM Response: ", response)
+
+            response.file_path = doc["file_path"]
+            return response
         
-            except Exception as e:
-                print(f"Retry {attempt+1} failed for {doc['file_path']}: {e}")
-                time.sleep(1)
-        
-        return None
+        except Exception:
+            return None
 
     suggestions = []
 

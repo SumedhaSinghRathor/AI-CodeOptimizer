@@ -10,6 +10,7 @@ class OptimizationSuggestion(BaseModel):
     original_complexity: str
     optimized_complexity: str
     explanation: str
+    original_code: str
     refactored_code: str
     
 class AnalysisResponse(BaseModel):
