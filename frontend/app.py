@@ -2,10 +2,12 @@ import streamlit as st
 import requests
 import os
 from dotenv import load_dotenv
+from PIL import Image
 
 load_dotenv()
 
-st.set_page_config(page_title="AI Code Optimizer", layout="wide")
+favicon = Image.open("favicon.png")
+st.set_page_config(page_title="AI Code Optimizer", page_icon=favicon, layout="wide")
 
 st.title("AI Code Complexity Optimizer")
 st.subheader("Improve Time & Space Complexity with AI")
@@ -29,7 +31,7 @@ def fetch_branches(repo_url):
             return []
 
         return [b["name"] for b in response.json()]
-    except:
+    except Exception:
         return []
 
 branches = fetch_branches(repo_url) if repo_url else []
