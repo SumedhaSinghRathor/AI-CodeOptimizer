@@ -81,14 +81,15 @@ if repo_url and branches:
 if commit_info:
     st.markdown("### 🔄 Latest Commit")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.code(commit_info["sha"][:10], language="text")
-        st.caption("Commit SHA")
+        st.write(f"**Commit SHA:** {commit_info['sha'][:10]}")
 
     with col2:
         st.write(f"**Author:** {commit_info['author']}")
+
+    with col3: 
         st.write(f"**Date:** {commit_info['date']}")
 
     st.info(f"📝 {commit_info['message']}")
