@@ -1,5 +1,5 @@
 import os
-import time
+import json
 import requests
 import base64
 from dotenv import load_dotenv
@@ -100,8 +100,8 @@ def build_vector_store(documents, index_path):
 
     return vectorstore
 
-def load_or_create_vectorstore(documents, owner, repo, branch):
-    index_path = os.path.join(FAISS_DIR, f"{owner}_{repo}_{branch}")
+def load_or_create_vectorstore(documents, owner, repo, branch, commit_sha):
+    index_path = os.path.join(FAISS_DIR, f"{owner}_{repo}_{branch}_{commit_sha}")
 
     if os.path.exists(index_path):
         try:
@@ -122,9 +122,46 @@ def retrieve_context(vectorstore, query, k=3):
 
     return context[:MAX_CONTEXT_CHARS]
 
+def get_latest_commit_sha(owner, repo, branch):
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}"
+    
+    headers = {
+        "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"
+    }
+    
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        print("Error fetching commit SHA:", response.text)
+        return None
+    
+    data = response.json()
+    return data.get("sha")
+
+CACHE_DIR = "cache"
+
+def get_cache_path(owner, repo, branch, commit_sha):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    return f"{CACHE_DIR}/{owner}_{repo}_{branch}_{commit_sha}.json"
+
 def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
     owner, repo = parse_github_url(request.repo_url)
     branch = request.branch or "main"
+    
+    commit_sha = get_latest_commit_sha(owner, repo, branch)
+    
+    if not commit_sha:
+        raise Exception("Could not fetch commit SHA")
+    
+    cache_path = get_cache_path(owner, repo, branch, commit_sha)
+    
+    if os.path.exists(cache_path):
+        print("Using cached result...")
+        with open(cache_path, "r") as f:
+            cached_data = json.load(f)
+            return AnalysisResponse(**cached_data)
+        
+    print("New commit detected. Running optimizer...")
 
     file_paths = fetch_repo_files(owner, repo, branch)
     print("Total files fetched: ", len(file_paths))
@@ -150,7 +187,7 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
             suggestions=[]
         )
 
-    vectorstore = load_or_create_vectorstore(documents, owner, repo, branch)
+    vectorstore = load_or_create_vectorstore(documents, owner, repo, branch, commit_sha)
 
     prompt = ChatPromptTemplate.from_template("""
     Analyze the following code from file: {file_path}
@@ -208,5 +245,10 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
             result = future.result()
             if result:
                 suggestions.append(result)
+                
+    final_result = AnalysisResponse(repo_name=f"{owner}/{repo}", suggestions=suggestions)
+                
+    with open(cache_path, "w") as f:
+        json.dump(final_result.model_dump(), f)
 
-    return AnalysisResponse(repo_name = f"{owner}/{repo}", suggestions=suggestions)
+    return final_result

@@ -11,10 +11,11 @@ st.set_page_config(page_title="AI Code Optimizer", page_icon=favicon, layout="wi
 
 st.title("AI Code Complexity Optimizer")
 st.subheader("Improve Time & Space Complexity with AI")
+st.caption("Optimization runs when a new commit is detected")
 
 backend_url = os.getenv("BACKEND_URL")
 
-repo_url = st.text_input("GitHub Repository URL")
+repo_url = st.text_input("GitHub Repository URL", key="repo_input")
 
 @st.cache_data
 def fetch_branches(repo_url):
@@ -36,9 +37,62 @@ def fetch_branches(repo_url):
 
 branches = fetch_branches(repo_url) if repo_url else []
 
-branch = st.selectbox("Select Branch", branches) if branches else "main"
+if not branches:
+    branches=["main"]
+    
+branch = st.selectbox("Select Branch", branches, key="branch_select")
 
-# 🔥 Toggle view
+@st.cache_data
+def fetch_latest_commit(repo_url, branch):
+    try:
+        parts = repo_url.strip("/").split("/")
+        owner, repo = parts[-2], parts[-1]
+
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}"
+
+        headers = {
+            "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}"
+        }
+
+        response = requests.get(url, headers=headers)
+
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+
+        return {
+            "sha": data.get("sha"),
+            "message": data.get("commit", {}).get("message"),
+            "author": data.get("commit", {}).get("author", {}).get("name"),
+            "date": data.get("commit", {}).get("author", {}).get("date"),
+        }
+        
+    except Exception as e:
+        print("Commit fetch error: ", e)
+        return None
+
+commit_info = None
+
+if repo_url and branches:
+    with st.spinner("Fetching latest commit..."):
+        commit_info = fetch_latest_commit(repo_url, branch)
+
+if commit_info:
+    st.markdown("### 🔄 Latest Commit")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.code(commit_info["sha"][:10], language="text")
+        st.caption("Commit SHA")
+
+    with col2:
+        st.write(f"**Author:** {commit_info['author']}")
+        st.write(f"**Date:** {commit_info['date']}")
+
+    st.info(f"📝 {commit_info['message']}")
+
 view_mode = st.radio(
     "View Mode",
     ["Side-by-Side", "Optimized Only"],
