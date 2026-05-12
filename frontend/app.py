@@ -6,7 +6,7 @@ from PIL import Image
 
 load_dotenv()
 
-favicon = Image.open("favicon.png")
+favicon = Image.open("favicon.ico")
 st.set_page_config(page_title="AI Code Optimizer", page_icon=favicon, layout="wide")
 
 st.title("AI Code Complexity Optimizer")
