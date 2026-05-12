@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 import requests
 import base64
 from dotenv import load_dotenv
@@ -20,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 load_dotenv()
 
 llm = ChatOpenRouter(
-    model="deepseek/deepseek-chat",
+    model="deepseek/deepseek-v4-flash",
     api_key=os.getenv("OPENROUTER_API_KEY"),
     temperature=0,
     max_completion_tokens=600
@@ -70,9 +71,38 @@ COMPLEXITY_ORDER = {
     "O(2^n)": 8
 }
 
+def extract_big_o(text):
+
+    text = text.lower().replace(" ", "")
+
+    patterns = [
+        (r"o\(1\)", "O(1)"),
+        (r"o\(logn\)", "O(log n)"),
+        (r"o\(n\+m\)", "O(n + m)"),
+        (r"o\(nlogn\)", "O(n log n)"),
+        (r"o\(n\^2\)|o\(n²\)", "O(n^2)"),
+        (r"o\(n\^3\)", "O(n^3)"),
+        (r"o\(2\^n\)", "O(2^n)"),
+        (r"o\(n\)", "O(n)")
+    ]
+
+    for pattern, normalized in patterns:
+        if re.search(pattern, text):
+            return normalized
+
+    return None
+
+
 def is_complexity_improved(original, optimized):
-    original = original.strip()
-    optimized = optimized.strip()
+
+    original = extract_big_o(original)
+    optimized = extract_big_o(optimized)
+
+    print("Normalized Original:", original)
+    print("Normalized Optimized:", optimized)
+
+    if not original or not optimized:
+        return False
 
     if original == optimized:
         return False
@@ -83,7 +113,7 @@ def is_complexity_improved(original, optimized):
     if original_rank and optimized_rank:
         return optimized_rank < original_rank
 
-    return True
+    return False
 
 def is_meaningful_refactor(original_code, refactored_code):
 
@@ -406,15 +436,34 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
         if content:
             return {"file_path": path, "content": content}
         return None
+    
+    IGNORE_PATTERNS = [
+        "Application.java",
+        "Config.java",
+        "Test.java",
+        "Tests.java",
+        "/dto/",
+        "/entity/",
+        "/model/",
+        "/config/"
+    ]
 
     documents = []
     with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = [executor.submit(fetch_single_file, path) for path in file_paths[:10]]
+        futures = [executor.submit(fetch_single_file, path) for path in file_paths[:40]]
         
         for future in as_completed(futures):
             result = future.result()
             if result:
                 documents.append(result)
+                
+    documents = [
+        doc for doc in documents
+        if not any(
+            pattern in doc["file_path"]
+            for pattern in IGNORE_PATTERNS
+        )
+    ]
 
     if not documents:
         return AnalysisResponse(
@@ -439,82 +488,160 @@ def analyze_codebase(request: RepoRequest) -> AnalysisResponse:
     Code:
     {code_content}
 
-    Return:
-    - original_complexity
-    - optimized_complexity
-    - explanation
-    - original_code
-    - refactored_code
+    IMPORTANT:
+    Return ONLY structured data.
 
     Rules:
     - Focus ONLY on measurable performance improvements
     - Do NOT suggest stylistic refactors
     - ONLY return suggestions if complexity improves
-    - If no optimization exists, return "NO_OPTIMIZATION"
-    - Prioritize nested loops, repeated DB/API calls, recursion, and redundant allocations
+    - If no optimization exists:
+        original_complexity="NO_OPTIMIZATION"
+        optimized_complexity="NO_OPTIMIZATION"
+    - Prioritize:
+        - nested loops
+        - repeated DB/API calls
+        - recursion
+        - redundant allocations
     - Keep snippets under 30 lines
     - Do not return the entire file
     """)
 
     chain = prompt | llm.with_structured_output(OptimizationSuggestion)
     
-
     def process_doc(doc):
-        for attempt in range(3):
+
+        chunk_suggestions = []
+
+        ast_chunks = extract_ast_chunks(
+            doc["content"],
+            doc["file_path"]
+        )
+
+        for chunk in ast_chunks:
+
             try:
+
+                if len(chunk["content"].strip()) < 80:
+                    continue
+
+                complexity_report = analyze_complexity(
+                    chunk["content"],
+                    chunk["file_path"]
+                )
+
+                if not complexity_report["functions"]:
+                    continue
+
+                max_complexity = max(
+                    [
+                        f["complexity"]
+                        for f in complexity_report["functions"]
+                    ],
+                    default=0
+                )
+
+                # Skip trivial functions
+                if max_complexity < 4:
+                    continue
+
                 query = f"""
-                    Find similar high complexity functions and optimization patterns for:
-                    {doc['file_path']}
+                Find optimization strategies for this function.
+
+                File:
+                {chunk['file_path']}
+
+                Function Type:
+                {chunk['chunk_type']}
+
+                Complexity:
+                {json.dumps(complexity_report)}
+
+                Code:
+                {chunk['content']}
                 """
 
                 retrieved_context = retrieve_context(
                     vectorstore,
-                    query=query
+                    query=query,
+                    k=8
                 )
-                
-                complexity_report = analyze_complexity(doc["content"], doc["file_path"])
 
                 response = chain.invoke({
-                    "file_path": doc["file_path"],
-                    "code_content": trim_code(doc["content"]),
+                    "file_path": chunk["file_path"],
+                    "code_content": chunk["content"],
                     "retrieved_context": retrieved_context,
-                    "complexity_report": json.dumps(complexity_report, indent=2)
+                    "complexity_report": json.dumps(
+                        complexity_report,
+                        indent=2
+                    )
                 })
 
+                print("\n========================")
+                print("CHUNK ANALYSIS")
+                print("File:", chunk["file_path"])
+                print(
+                    "Lines:",
+                    f"{chunk['start_line']} - {chunk['end_line']}"
+                )
                 print("LLM Response:", response)
 
-                return OptimizationSuggestion(
-                    file_path=doc["file_path"],
-                    original_complexity=response.original_complexity,
-                    optimized_complexity=response.optimized_complexity,
-                    explanation=response.explanation,
-                    original_code=response.original_code,
-                    refactored_code=response.refactored_code
+                if response is None:
+                    continue
+
+                response.file_path = (
+                    f"{chunk['file_path']} "
+                    f"(Lines {chunk['start_line']}-"
+                    f"{chunk['end_line']})"
                 )
 
-            except Exception as e:
-                print(f"Attempt {attempt+1} failed for {doc['file_path']}: {e}")
-                time.sleep(2)
+                if (
+                    response.original_complexity ==
+                    "NO_OPTIMIZATION"
+                ):
+                    continue
 
-        return None
+                improved = is_complexity_improved(
+                    response.original_complexity,
+                    response.optimized_complexity
+                )
+
+                meaningful = is_meaningful_refactor(
+                    response.original_code,
+                    response.refactored_code
+                )
+
+                if improved and meaningful:
+                    chunk_suggestions.append(response)
+
+            except Exception as e:
+
+                print(
+                    f"Chunk analysis failed for "
+                    f"{chunk['file_path']}: {e}"
+                )
+
+                continue
+
+        return chunk_suggestions
 
     suggestions = []
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = [executor.submit(process_doc, doc) for doc in documents[:5]]
+
+        futures = [
+            executor.submit(process_doc, doc)
+            for doc in documents[:20]
+        ]
 
         for future in as_completed(futures):
-            result = future.result()
-            
-            if result:
-                improved = is_complexity_improved(result.optimized_complexity, result.optimized_complexity)
-                meaningful = is_meaningful_refactor(result.original_code, result.refactored_code)
-                
-                if improved and meaningful:
-                    suggestions.append(result)
-            
+
+            results = future.result()
+
+            if results:
+                suggestions.extend(results)
             else:
-                print(f"Skipped non-improving suggestion for {result.file_path}")
+                print(f"Skipped non-improving suggestion")
                 
     final_result = AnalysisResponse(repo_name=f"{owner}/{repo}", suggestions=suggestions)
                 
