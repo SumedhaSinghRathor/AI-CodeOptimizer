@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from langchain_openrouter import ChatOpenRouter
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from tree_sitter_languages import get_parser
+# from tree_sitter_languages import get_parser
 from radon.complexity import cc_visit
 from radon.metrics import mi_visit
 from langchain_community.embeddings import HuggingFaceEmbeddings
